@@ -7,12 +7,14 @@
 # Licensed to PSF under a Contributor Agreement.
 #
 
-__all__ = ['Queue', 'SimpleQueue', 'JoinableQueue']
+__all__ = ['Queue', 'SimpleQueue', 'JoinableQueue', 'PriorityQueue',
+           'PriorityJoinableQueue', 'LifoQueue', 'LifoJoinableQueue']
 
 import sys
 import os
 import threading
 import collections
+import heapq
 import time
 import types
 import weakref
@@ -33,6 +35,10 @@ from .util import debug, info, Finalize, register_after_fork, is_exiting
 #
 
 class Queue(object):
+    _buffer_init = staticmethod(collections.deque)
+    _buffer_clear = staticmethod(collections.deque.clear)
+    _buffer_put = staticmethod(collections.deque.append)
+    _buffer_get = staticmethod(collections.deque.popleft)
 
     def __init__(self, maxsize=0, *, ctx):
         if maxsize <= 0:
@@ -73,7 +79,7 @@ class Queue(object):
             self._notempty._at_fork_reinit()
         else:
             self._notempty = threading.Condition(threading.Lock())
-        self._buffer = collections.deque()
+        self._buffer = self._buffer_init()
         self._thread = None
         self._jointhread = None
         self._joincancelled = False
@@ -92,7 +98,7 @@ class Queue(object):
         with self._notempty:
             if self._thread is None:
                 self._start_thread()
-            self._buffer.append(obj)
+            self._buffer_put(self._buffer, obj)
             self._notempty.notify()
 
     def get(self, block=True, timeout=None):
@@ -165,9 +171,9 @@ class Queue(object):
         debug('Queue._start_thread()')
 
         # Start thread which transfers data from buffer to pipe
-        self._buffer.clear()
+        self._buffer_clear(self._buffer)
         self._thread = threading.Thread(
-            target=Queue._feed,
+            target=self._feed,
             args=(self._buffer, self._notempty, self._send_bytes,
                   self._wlock, self._writer.close, self._ignore_epipe,
                   self._on_queue_feeder_error, self._sem),
@@ -181,14 +187,14 @@ class Queue(object):
 
         if not self._joincancelled:
             self._jointhread = Finalize(
-                self._thread, Queue._finalize_join,
+                self._thread, self._finalize_join,
                 [weakref.ref(self._thread)],
                 exitpriority=-5
                 )
 
         # Send sentinel to the thread queue object when garbage collected
         self._close = Finalize(
-            self, Queue._finalize_close,
+            self, self._finalize_close,
             [self._buffer, self._notempty],
             exitpriority=10
             )
@@ -203,22 +209,24 @@ class Queue(object):
         else:
             debug('... queue thread already dead')
 
-    @staticmethod
-    def _finalize_close(buffer, notempty):
+    @classmethod
+    def _finalize_close(cls, buffer, notempty):
         debug('telling queue thread to quit')
         with notempty:
-            buffer.append(_sentinel)
+            cls._buffer_put(buffer, _sentinel)
             notempty.notify()
 
-    @staticmethod
-    def _feed(buffer, notempty, send_bytes, writelock, close, ignore_epipe,
+    @classmethod
+    def _feed(cls, buffer, notempty, send_bytes, writelock, close, ignore_epipe,
               onerror, queue_sem):
         debug('starting thread to feed data to pipe')
         nacquire = notempty.acquire
         nrelease = notempty.release
         nwait = notempty.wait
-        bpopleft = buffer.popleft
+        bget = cls._buffer_get
         sentinel = _sentinel
+        # Make sure obj is bound in onerror call below.
+        obj = None
         if sys.platform != 'win32':
             wacquire = writelock.acquire
             wrelease = writelock.release
@@ -235,7 +243,7 @@ class Queue(object):
                     nrelease()
                 try:
                     while 1:
-                        obj = bpopleft()
+                        obj = bget(buffer)
                         if obj is sentinel:
                             debug('feeder thread got sentinel -- exiting')
                             close()
@@ -281,8 +289,10 @@ class Queue(object):
         import traceback
         traceback.print_exc()
 
-
-_sentinel = object()
+class _Sentinel(object):
+    def __lt__(self, other): return False
+    def __gt__(self, other): return True
+_sentinel = _Sentinel()
 
 #
 # A queue type which also supports join() and task_done() methods
@@ -315,7 +325,7 @@ class JoinableQueue(Queue):
         with self._notempty, self._cond:
             if self._thread is None:
                 self._start_thread()
-            self._buffer.append(obj)
+            self._buffer_put(self._buffer, obj)
             self._unfinished_tasks.release()
             self._notempty.notify()
 
@@ -378,3 +388,20 @@ class SimpleQueue(object):
                 self._writer.send_bytes(obj)
 
     __class_getitem__ = classmethod(types.GenericAlias)
+
+class _PriorityMixin(object):
+    _buffer_init = staticmethod(list)
+    _buffer_clear = staticmethod(list.clear)
+    _buffer_put = staticmethod(heapq.heappush)
+    _buffer_get = staticmethod(heapq.heappop)
+
+class _LifoMixin(object):
+    _buffer_init = staticmethod(list)
+    _buffer_clear = staticmethod(list.clear)
+    _buffer_put = staticmethod(list.append)
+    _buffer_get = staticmethod(list.pop)
+
+class PriorityQueue(_PriorityMixin, Queue): pass
+class PriorityJoinableQueue(_PriorityMixin, JoinableQueue): pass
+class LifoQueue(_LifoMixin, Queue): pass
+class LifoJoinableQueue(_LifoMixin, JoinableQueue): pass

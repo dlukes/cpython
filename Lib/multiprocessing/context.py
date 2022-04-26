@@ -112,6 +112,26 @@ class BaseContext(object):
         from .queues import SimpleQueue
         return SimpleQueue(ctx=self.get_context())
 
+    def PriorityQueue(self, maxsize=0):
+        '''Returns a queue object'''
+        from .queues import PriorityQueue
+        return PriorityQueue(maxsize, ctx=self.get_context())
+
+    def PriorityJoinableQueue(self, maxsize=0):
+        '''Returns a queue object'''
+        from .queues import PriorityJoinableQueue
+        return PriorityJoinableQueue(maxsize, ctx=self.get_context())
+
+    def LifoQueue(self, maxsize=0):
+        '''Returns a queue object'''
+        from .queues import LifoQueue
+        return LifoQueue(maxsize, ctx=self.get_context())
+
+    def LifoJoinableQueue(self, maxsize=0):
+        '''Returns a queue object'''
+        from .queues import LifoJoinableQueue
+        return LifoJoinableQueue(maxsize, ctx=self.get_context())
+
     def Pool(self, processes=None, initializer=None, initargs=(),
              maxtasksperchild=None):
         '''Returns a process pool object'''
